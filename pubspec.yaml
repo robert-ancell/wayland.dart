@@ -1,0 +1,13 @@
+name: wayland
+version: 0.1.0
+
+description:
+  A native Dart implementation of the Wayland protocol.
+
+homepage: https://github.com/robert-ancell/wayland.dart
+
+environment:
+  sdk: '>=2.12.0 <3.0.0'
+
+dev_dependencies:
+  pedantic: ^1.9.0
