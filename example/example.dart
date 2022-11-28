@@ -4,7 +4,11 @@ void main() async {
   var client = WaylandClient();
   await client.connect();
 
-  // FIXME
+  var surface = client.compositor!.createSurface();
+  var xdgSurface = client.xdgWmBase!.getXdgSurface(surface);
+  var toplevel = xdgSurface.getToplevel();
+  toplevel.setTitle('Hello World');
+  toplevel.setMinSize(400, 400);
 
   //await client.close();
 }

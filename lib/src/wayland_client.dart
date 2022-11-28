@@ -349,8 +349,13 @@ class WaylandClient {
   late final WaylandDisplay _display;
   WaylandCompositor? compositor;
   WaylandShm? shm;
+  WaylandOutput? output;
+  WaylandDataDeviceManager? dataDeviceManager;
+  WaylandSeat? seat;
   XdgWmBase? xdgWmBase;
   final _objects = <int, WaylandObject>{};
+
+  // ID 1 is used for the display object.
   int _nextId = 2;
 
   /// Creates a new Wayland client.
@@ -377,6 +382,10 @@ class WaylandClient {
 
     _display = WaylandDisplay(this);
     /*_registry = */ _display.getRegistry();
+    var completer = Completer();
+    _display.sync((_) => completer.complete());
+
+    await completer.future;
   }
 
   /// Connects to the Wayland server on a socket on [path].
@@ -448,13 +457,68 @@ class _WaylandReadBuffer {
 
   _WaylandReadBuffer(Uint8List data) : _data = data;
 
+  int readInt() {
+    assert(_data.length >= _offset + 4);
+    var value = ByteData.view(_data.buffer).getInt32(_offset, Endian.little);
+    _offset += 4;
+    return value;
+  }
+
   int readUint() {
     assert(_data.length >= _offset + 4);
-    var value = _data[_offset + 3] << 24 |
-        _data[_offset + 2] << 16 |
-        _data[_offset + 1] << 8 |
-        _data[_offset + 0];
+    var value = ByteData.view(_data.buffer).getUint32(_offset, Endian.little);
     _offset += 4;
+    return value;
+  }
+
+  double readFixed() {
+    var value = readUint();
+    var sign = value & 0x80000000 != 0 ? -1 : 1;
+    var integer = (value >> 8) & 0x7fffff;
+    var fraction = value & 0xff;
+    return sign * (integer + fraction / 255.0);
+  }
+
+  Uint8List readArray() {
+    var length = readUint();
+    var paddedLength = length;
+    if (paddedLength % 4 != 0) {
+      paddedLength += 4 - (paddedLength % 4);
+    }
+    assert(_data.length >= _offset + paddedLength);
+
+    var value = _data.sublist(_offset, _offset + length);
+    _offset += length;
+
+    // Skip padding.
+    for (var i = length; i < paddedLength; i++) {
+      assert(_data[_offset] == 0x00);
+      _offset++;
+    }
+
+    return value;
+  }
+
+  List<int> readUintArray() {
+    var length = readUint();
+    var paddedLength = length;
+    if (paddedLength % 4 != 0) {
+      paddedLength += 4 - (paddedLength % 4);
+    }
+    assert(_data.length >= _offset + paddedLength);
+
+    assert(length % 4 == 0);
+    var value = <int>[];
+    for (var o = 0; o < length; o += 4) {
+      value.add(readUint());
+    }
+
+    // Skip padding.
+    for (var i = length; i < paddedLength; i++) {
+      assert(_data[_offset] == 0x00);
+      _offset++;
+    }
+
     return value;
   }
 
@@ -479,6 +543,10 @@ class _WaylandReadBuffer {
     }
 
     return value;
+  }
+
+  int readFd() {
+    return -1;
   }
 }
 
@@ -515,6 +583,10 @@ class _WaylandWriteBuffer {
     }
   }
 
+  void writeObject(WaylandObject? object) {
+    writeUint(object?.id ?? 0);
+  }
+
   void writeFd(int fd) {
     _fds.add(fd);
   }
@@ -534,11 +606,12 @@ abstract class WaylandObject {
 class WaylandDisplay extends WaylandObject {
   WaylandDisplay(WaylandClient client) : super(client, 1);
 
-  void sync() {
+  WaylandCallback sync(Function(int) onDone) {
     var callback = client._getNextId();
     var payload = _WaylandWriteBuffer();
     payload.writeUint(callback);
     client._sendRequest(id, 0, payload.data);
+    return WaylandCallback(client, callback, onDone);
   }
 
   WaylandRegistry getRegistry() {
@@ -604,6 +677,17 @@ class WaylandRegistry extends WaylandObject {
           case 'wl_shm':
             client.shm = WaylandShm(client, bind(name, interface, version));
             break;
+          case 'wl_output':
+            client.output =
+                WaylandOutput(client, bind(name, interface, version));
+            break;
+          case 'wl_data_device_manager':
+            client.dataDeviceManager = WaylandDataDeviceManager(
+                client, bind(name, interface, version));
+            break;
+          case 'wl_seat':
+            client.seat = WaylandSeat(client, bind(name, interface, version));
+            break;
           case 'xdg_wm_base':
             client.xdgWmBase =
                 XdgWmBase(client, bind(name, interface, version));
@@ -622,6 +706,27 @@ class WaylandRegistry extends WaylandObject {
   }
 }
 
+class WaylandCallback extends WaylandObject {
+  final Function(int) onDone;
+
+  WaylandCallback(WaylandClient client, int id, this.onDone)
+      : super(client, id);
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      case 0:
+        var buffer = _WaylandReadBuffer(payload);
+        var callbackData = buffer.readUint();
+        onDone(callbackData);
+        break;
+      default:
+        print('wl_callback::$code $payload');
+        break;
+    }
+  }
+}
+
 class WaylandCompositor extends WaylandObject {
   WaylandCompositor(WaylandClient client, int id) : super(client, id);
 
@@ -629,7 +734,7 @@ class WaylandCompositor extends WaylandObject {
     var id = client._getNextId();
     var payload = _WaylandWriteBuffer();
     payload.writeUint(id);
-    client._sendRequest(id, 0, payload.data);
+    client._sendRequest(this.id, 0, payload.data);
     return WaylandSurface(client, id);
   }
 
@@ -637,7 +742,7 @@ class WaylandCompositor extends WaylandObject {
     var id = client._getNextId();
     var payload = _WaylandWriteBuffer();
     payload.writeUint(id);
-    client._sendRequest(id, 1, payload.data);
+    client._sendRequest(this.id, 1, payload.data);
     return WaylandRegion(client, id);
   }
 
@@ -668,7 +773,7 @@ class WaylandShmPool extends WaylandObject {
     payload.writeInt(height);
     payload.writeInt(stride);
     payload.writeUint(_encodeShmFormat(format));
-    client._sendRequest(id, 0, payload.data);
+    client._sendRequest(this.id, 0, payload.data);
     return WaylandBuffer(client, id);
   }
 
@@ -704,7 +809,7 @@ class WaylandShm extends WaylandObject {
     payload.writeUint(id);
     payload.writeFd(fd);
     payload.writeUint(size);
-    client._sendRequest(id, 0, payload.data);
+    client._sendRequest(this.id, 0, payload.data);
     return WaylandShmPool(client, id);
   }
 
@@ -747,6 +852,160 @@ class WaylandBuffer extends WaylandObject {
   }
 }
 
+class WaylandDataOffer extends WaylandObject {
+  WaylandDataOffer(WaylandClient client, int id) : super(client, id);
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      default:
+        print('wl_data_offer::$code $payload');
+        break;
+    }
+  }
+}
+
+class WaylandDataSource extends WaylandObject {
+  WaylandDataSource(WaylandClient client, int id) : super(client, id);
+
+  void offer(String mimeType) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeString(mimeType);
+    client._sendRequest(id, 0, payload.data);
+  }
+
+  void destroy() {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 1, payload.data);
+  }
+
+  void setActions(int actions) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeUint(actions);
+    client._sendRequest(id, 2, payload.data);
+  }
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      case 0:
+        var buffer = _WaylandReadBuffer(payload);
+        var mimeType = buffer.readString();
+        print('wl_data_source::target $mimeType');
+        break;
+      case 1:
+        var buffer = _WaylandReadBuffer(payload);
+        var mimeType = buffer.readString();
+        var fd = buffer.readFd();
+        print('wl_data_source::send $mimeType $fd');
+        break;
+      case 2:
+        print('wl_data_source::cancelled');
+        break;
+      case 3:
+        print('wl_data_source::dndDropPerformed');
+        break;
+      case 4:
+        print('wl_data_source::dndFinished');
+        break;
+      case 5:
+        var buffer = _WaylandReadBuffer(payload);
+        var dndAction = buffer.readUint();
+        print('wl_data_source::action $dndAction');
+        break;
+      default:
+        print('wl_data_source::$code $payload');
+        break;
+    }
+  }
+}
+
+class WaylandDataDevice extends WaylandObject {
+  WaylandDataDevice(WaylandClient client, int id) : super(client, id);
+
+  void startDrag(
+      {WaylandDataSource? source,
+      required WaylandSurface origin,
+      WaylandSurface? icon,
+      required int serial}) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeObject(source);
+    payload.writeObject(origin);
+    payload.writeObject(icon);
+    payload.writeUint(serial);
+    client._sendRequest(id, 0, payload.data);
+  }
+
+  void setSelection({WaylandDataSource? source, required int serial}) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeObject(source);
+    payload.writeUint(serial);
+    client._sendRequest(id, 1, payload.data);
+  }
+
+  void release() {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 2, payload.data);
+  }
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      case 0:
+        print('wl_data_device::dataOffer $payload');
+        break;
+      case 1:
+        print('wl_data_device::enter $payload');
+        break;
+      case 2:
+        print('wl_data_device::leave $payload');
+        break;
+      case 3:
+        print('wl_data_device::motion $payload');
+        break;
+      case 4:
+        print('wl_data_device::drop $payload');
+        break;
+      case 5:
+        print('wl_data_device::selection $payload');
+        break;
+      default:
+        print('wl_data_device::$code $payload');
+        break;
+    }
+  }
+}
+
+class WaylandDataDeviceManager extends WaylandObject {
+  WaylandDataDeviceManager(WaylandClient client, int id) : super(client, id);
+
+  WaylandDataSource createDataSource() {
+    var id = client._getNextId();
+    var payload = _WaylandWriteBuffer();
+    payload.writeUint(id);
+    client._sendRequest(this.id, 0, payload.data);
+    return WaylandDataSource(client, id);
+  }
+
+  WaylandDataDevice getDataDevice(WaylandSeat seat) {
+    var id = client._getNextId();
+    var payload = _WaylandWriteBuffer();
+    payload.writeUint(id);
+    payload.writeObject(seat);
+    client._sendRequest(this.id, 1, payload.data);
+    return WaylandDataDevice(client, id);
+  }
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      default:
+        print('wl_data_device_manager::$code $payload');
+        break;
+    }
+  }
+}
+
 class WaylandSurface extends WaylandObject {
   WaylandSurface(WaylandClient client, int id) : super(client, id);
 
@@ -757,7 +1016,7 @@ class WaylandSurface extends WaylandObject {
 
   void attach(WaylandBuffer buffer, int x, int y) {
     var payload = _WaylandWriteBuffer();
-    payload.writeUint(buffer.id);
+    payload.writeObject(buffer);
     payload.writeInt(x);
     payload.writeInt(y);
     client._sendRequest(id, 1, payload.data);
@@ -787,6 +1046,258 @@ class WaylandSurface extends WaylandObject {
         break;
       default:
         print('wl_surfacer::$code $payload');
+        break;
+    }
+  }
+}
+
+class WaylandSeat extends WaylandObject {
+  int capabilities = 0;
+
+  /// Name of the seat.
+  String name = '';
+
+  WaylandSeat(WaylandClient client, int id) : super(client, id);
+
+  WaylandPointer getPointer() {
+    var id = client._getNextId();
+    var payload = _WaylandWriteBuffer();
+    payload.writeUint(id);
+    client._sendRequest(this.id, 0, payload.data);
+    return WaylandPointer(client, id);
+  }
+
+  WaylandKeyboard getKeyboard() {
+    var id = client._getNextId();
+    var payload = _WaylandWriteBuffer();
+    payload.writeUint(id);
+    client._sendRequest(this.id, 1, payload.data);
+    return WaylandKeyboard(client, id);
+  }
+
+  WaylandTouch getTouch() {
+    var id = client._getNextId();
+    var payload = _WaylandWriteBuffer();
+    payload.writeUint(id);
+    client._sendRequest(this.id, 2, payload.data);
+    return WaylandTouch(client, id);
+  }
+
+  void release(String name) {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 5, payload.data);
+  }
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      case 0:
+        var buffer = _WaylandReadBuffer(payload);
+        capabilities = buffer.readUint();
+        print('wl_seat::capabilities $capabilities');
+        break;
+      case 1:
+        var buffer = _WaylandReadBuffer(payload);
+        name = buffer.readString();
+        print('wl_seat::name $name');
+        break;
+      default:
+        print('wl_seat::$code $payload');
+        break;
+    }
+  }
+}
+
+class WaylandPointer extends WaylandObject {
+  WaylandPointer(WaylandClient client, int id) : super(client, id);
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      case 0:
+        var buffer = _WaylandReadBuffer(payload);
+        var serial = buffer.readUint();
+        var surface = client._objects[buffer.readUint()] as WaylandSurface;
+        var x = buffer.readFixed();
+        var y = buffer.readFixed();
+        print('wl_pointer::enter $serial ${surface.id} $x $y');
+        break;
+      case 1:
+        var buffer = _WaylandReadBuffer(payload);
+        var serial = buffer.readUint();
+        var surface = client._objects[buffer.readUint()] as WaylandSurface;
+        print('wl_pointer::leave $serial ${surface.id}');
+        break;
+      case 2:
+        var buffer = _WaylandReadBuffer(payload);
+        var time = buffer.readUint();
+        var x = buffer.readFixed();
+        var y = buffer.readFixed();
+        print('wl_pointer::motion $time $x $y');
+        break;
+      case 3:
+        var buffer = _WaylandReadBuffer(payload);
+        var serial = buffer.readUint();
+        var time = buffer.readUint();
+        var button = buffer.readUint();
+        var state = buffer.readUint();
+        print('wl_pointer::button $serial $time $button $state');
+        break;
+      case 4:
+        print('wl_pointer::axis $payload');
+        break;
+      case 5:
+        print('wl_pointer::frame $payload');
+        break;
+      case 6:
+        print('wl_pointer::axis_source $payload');
+        break;
+      case 7:
+        print('wl_pointer::axis_stop $payload');
+        break;
+      case 8:
+        print('wl_pointer::axis_discrete $payload');
+        break;
+      case 9:
+        print('wl_pointer::axis_value120 $payload');
+        break;
+      default:
+        print('wl_pointer::$code $payload');
+        break;
+    }
+  }
+}
+
+class WaylandKeyboard extends WaylandObject {
+  WaylandKeyboard(WaylandClient client, int id) : super(client, id);
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      case 0:
+        var buffer = _WaylandReadBuffer(payload);
+        var format = buffer.readUint();
+        var fd = buffer.readFd();
+        var size = buffer.readUint();
+        print('wl_keyboard::keymap $format $fd $size');
+        break;
+      case 1:
+        var buffer = _WaylandReadBuffer(payload);
+        var serial = buffer.readUint();
+        var surface = client._objects[buffer.readUint()] as WaylandSurface;
+        var keys = buffer.readArray();
+        print('wl_keyboard::enter $serial ${surface.id} $keys');
+        break;
+      case 2:
+        var buffer = _WaylandReadBuffer(payload);
+        var serial = buffer.readUint();
+        var surface = client._objects[buffer.readUint()] as WaylandSurface;
+        print('wl_keyboard::leave $serial ${surface.id}');
+        break;
+      case 3:
+        var buffer = _WaylandReadBuffer(payload);
+        var serial = buffer.readUint();
+        var time = buffer.readUint();
+        var key = buffer.readUint();
+        var state = buffer.readUint();
+        print('wl_keyboard::key $serial $time $key $state');
+        break;
+      case 4:
+        print('wl_keyboard::modifiers $payload');
+        break;
+      case 5:
+        print('wl_keyboard::repeat_info $payload');
+        break;
+      default:
+        print('wl_keyboard::$code $payload');
+        break;
+    }
+  }
+}
+
+class WaylandTouch extends WaylandObject {
+  WaylandTouch(WaylandClient client, int id) : super(client, id);
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      default:
+        print('wl_touch::$code $payload');
+        break;
+    }
+  }
+}
+
+class WaylandOutput extends WaylandObject {
+  String name = '';
+  String description = '';
+  int scaleFactor = 1;
+
+  int x = -1;
+  int y = -1;
+  int physicalWidth = -1;
+  int physicalHeight = -1;
+  int subpixel = -1;
+  String make = '';
+  String model = '';
+  int transform = -1;
+
+  int modeFlags = 0;
+
+  /// Width of the mode in hardware units.
+  int width = -1;
+
+  /// Height of the mode in hardware units.
+  int height = -1;
+
+  /// Vertical refresh rate in mHz
+  int refresh = -1;
+
+  WaylandOutput(WaylandClient client, int id) : super(client, id);
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      case 0:
+        var buffer = _WaylandReadBuffer(payload);
+        x = buffer.readInt();
+        y = buffer.readInt();
+        physicalWidth = buffer.readInt();
+        physicalHeight = buffer.readInt();
+        subpixel = buffer.readInt();
+        make = buffer.readString();
+        model = buffer.readString();
+        print(
+            'wl_output::geometry $x $y $physicalWidth $physicalHeight $subpixel $make $model $transform');
+        break;
+      case 1:
+        var buffer = _WaylandReadBuffer(payload);
+        modeFlags = buffer.readUint();
+        width = buffer.readInt();
+        height = buffer.readInt();
+        refresh = buffer.readInt();
+        print('wl_output::mode $modeFlags $width $height $refresh');
+        break;
+      case 2:
+        print('wl_output::done');
+        break;
+      case 3:
+        var buffer = _WaylandReadBuffer(payload);
+        scaleFactor = buffer.readInt();
+        print('wl_output::scale $scaleFactor');
+        break;
+      case 4:
+        var buffer = _WaylandReadBuffer(payload);
+        name = buffer.readString();
+        print('wl_output::name $name');
+        break;
+      case 5:
+        var buffer = _WaylandReadBuffer(payload);
+        description = buffer.readString();
+        print('wl_output::description $description');
+        break;
+      default:
+        print('wl_output::$code $payload');
         break;
     }
   }
@@ -840,7 +1351,7 @@ class XdgWmBase extends WaylandObject {
     var id = client._getNextId();
     var payload = _WaylandWriteBuffer();
     payload.writeUint(id);
-    client._sendRequest(id, 1, payload.data);
+    client._sendRequest(this.id, 1, payload.data);
     return XdgPositioner(client, id);
   }
 
@@ -848,8 +1359,8 @@ class XdgWmBase extends WaylandObject {
     var id = client._getNextId();
     var payload = _WaylandWriteBuffer();
     payload.writeUint(id);
-    payload.writeUint(surface.id);
-    client._sendRequest(id, 2, payload.data);
+    payload.writeObject(surface);
+    client._sendRequest(this.id, 2, payload.data);
     return XdgSurface(client, id);
   }
 
@@ -928,7 +1439,7 @@ class XdgSurface extends WaylandObject {
     var id = client._getNextId();
     var payload = _WaylandWriteBuffer();
     payload.writeUint(id);
-    client._sendRequest(id, 1, payload.data);
+    client._sendRequest(this.id, 1, payload.data);
     return XdgToplevel(client, id);
   }
 
@@ -938,7 +1449,7 @@ class XdgSurface extends WaylandObject {
     payload.writeUint(id);
     payload.writeUint(parent);
     payload.writeUint(positioner);
-    client._sendRequest(id, 2, payload.data);
+    client._sendRequest(this.id, 2, payload.data);
     return id;
   }
 
@@ -960,6 +1471,11 @@ class XdgSurface extends WaylandObject {
   @override
   void processEvent(int code, Uint8List payload) {
     switch (code) {
+      case 0:
+        var buffer = _WaylandReadBuffer(payload);
+        var serial = buffer.readUint();
+        print('xdg_surface::configure $serial');
+        break;
       default:
         print('xdg_surface::$code $payload');
         break;
@@ -975,11 +1491,23 @@ class XdgToplevel extends WaylandObject {
     client._sendRequest(id, 0, payload.data);
   }
 
-  //setParent
+  void setParent(XdgToplevel? parent) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeObject(parent);
+    client._sendRequest(id, 1, payload.data);
+  }
 
-  //setTitle
+  void setTitle(String title) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeString(title);
+    client._sendRequest(id, 2, payload.data);
+  }
 
-  //setAppId
+  void setAppId(String appId) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeString(appId);
+    client._sendRequest(id, 3, payload.data);
+  }
 
   //showWindowMenu
 
@@ -989,23 +1517,70 @@ class XdgToplevel extends WaylandObject {
 
   //state
 
-  //setMaxSize
+  void setMaxSize(int width, int height) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeInt(width);
+    payload.writeInt(height);
+    client._sendRequest(id, 8, payload.data);
+  }
 
-  //setMinSize
+  void setMinSize(int width, int height) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeInt(width);
+    payload.writeInt(height);
+    client._sendRequest(id, 9, payload.data);
+  }
 
-  //setMaximized
+  void setMaximized() {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 10, payload.data);
+  }
 
-  //unsetMaximized
+  void unsetMaximized() {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 11, payload.data);
+  }
 
-  //setFullscreen
+  void setFullscren({WaylandOutput? output}) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeObject(output);
+    client._sendRequest(id, 12, payload.data);
+  }
 
-  //unsetFullscreen
+  void unsetFullscren() {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 13, payload.data);
+  }
 
-  //setMiminized
+  void setMinimized() {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 14, payload.data);
+  }
 
   @override
   void processEvent(int code, Uint8List payload) {
     switch (code) {
+      case 0:
+        var buffer = _WaylandReadBuffer(payload);
+        var width = buffer.readInt();
+        var height = buffer.readInt();
+        var states = buffer.readUintArray();
+        print('xdg_toplevel::configure $width $height $states');
+        break;
+      case 1:
+        print('xdg_toplevel::close');
+        break;
+      case 2:
+        var buffer = _WaylandReadBuffer(payload);
+        var width = buffer.readInt();
+        var height = buffer.readInt();
+        print('xdg_toplevel::configureBounds $width $height');
+        break;
+      case 3:
+        var buffer = _WaylandReadBuffer(payload);
+        var capabilities = buffer.readArray();
+        print('xdg_toplevel::wmCapabilities $capabilities');
+        break;
       default:
         print('xdg_toplevel::$code $payload');
         break;
