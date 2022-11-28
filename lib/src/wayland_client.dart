@@ -347,10 +347,9 @@ class WaylandClient {
   final _buffer = <int>[];
 
   late final WaylandDisplay _display;
-  late final WaylandRegistry _registry;
-  WaylandCompositor? _compositor;
-  WaylandShm? _shm;
-  XdgWmBase? _xdgWmBase;
+  WaylandCompositor? compositor;
+  WaylandShm? shm;
+  XdgWmBase? xdgWmBase;
   final _objects = <int, WaylandObject>{};
   int _nextId = 2;
 
@@ -377,7 +376,7 @@ class WaylandClient {
     await _connectToSocket(path);
 
     _display = WaylandDisplay(this);
-    _registry = _display.getRegistry();
+    /*_registry = */ _display.getRegistry();
   }
 
   /// Connects to the Wayland server on a socket on [path].
@@ -599,14 +598,14 @@ class WaylandRegistry extends WaylandObject {
 
         switch (interface) {
           case 'wl_compositor':
-            client._compositor =
+            client.compositor =
                 WaylandCompositor(client, bind(name, interface, version));
             break;
           case 'wl_shm':
-            client._shm = WaylandShm(client, bind(name, interface, version));
+            client.shm = WaylandShm(client, bind(name, interface, version));
             break;
           case 'xdg_wm_base':
-            client._xdgWmBase =
+            client.xdgWmBase =
                 XdgWmBase(client, bind(name, interface, version));
             break;
         }
@@ -634,12 +633,12 @@ class WaylandCompositor extends WaylandObject {
     return WaylandSurface(client, id);
   }
 
-  int createRegion() {
+  WaylandRegion createRegion() {
     var id = client._getNextId();
     var payload = _WaylandWriteBuffer();
     payload.writeUint(id);
     client._sendRequest(id, 1, payload.data);
-    return id;
+    return WaylandRegion(client, id);
   }
 
   @override
