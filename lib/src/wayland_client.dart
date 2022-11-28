@@ -377,9 +377,7 @@ class WaylandClient {
     await _connectToSocket(path);
 
     _display = WaylandDisplay(this);
-    _objects[_display.id] = _display;
     _registry = _display.getRegistry();
-    _objects[_registry.id] = _registry;
   }
 
   /// Connects to the Wayland server on a socket on [path].
@@ -435,45 +433,6 @@ class WaylandClient {
     return id;
   }
 
-  void _sendXdgSurfaceDestroy(int surfaceId) {
-    var payload = _WaylandWriteBuffer();
-    _sendRequest(surfaceId, 0, payload.data);
-  }
-
-  int _sendXdgSurfaceGetToplevel(int surfaceId) {
-    var id = _getNextId();
-    var payload = _WaylandWriteBuffer();
-    payload.writeUint(id);
-    _sendRequest(surfaceId, 1, payload.data);
-    return id;
-  }
-
-  int _sendXdgSurfaceGetPopup(int surfaceId, int parent, int positioner) {
-    var id = _getNextId();
-    var payload = _WaylandWriteBuffer();
-    payload.writeUint(id);
-    payload.writeUint(parent);
-    payload.writeUint(positioner);
-    _sendRequest(surfaceId, 2, payload.data);
-    return id;
-  }
-
-  void _sendXdgSurfaceSetWindowGeometry(
-      int surfaceId, int x, int y, int width, int height) {
-    var payload = _WaylandWriteBuffer();
-    payload.writeInt(x);
-    payload.writeInt(y);
-    payload.writeInt(width);
-    payload.writeInt(height);
-    _sendRequest(surfaceId, 3, payload.data);
-  }
-
-  void _sendXdgSurfaceAckConfigure(int surfaceId, int serial) {
-    var payload = _WaylandWriteBuffer();
-    payload.writeUint(serial);
-    _sendRequest(surfaceId, 4, payload.data);
-  }
-
   void _sendRequest(int objectId, int code, Uint8List payload) {
     var length = 8 + payload.length;
     var header = _WaylandWriteBuffer();
@@ -486,7 +445,7 @@ class WaylandClient {
 
 class _WaylandReadBuffer {
   var _offset = 0;
-  Uint8List _data;
+  final Uint8List _data;
 
   _WaylandReadBuffer(Uint8List data) : _data = data;
 
@@ -566,7 +525,9 @@ abstract class WaylandObject {
   final WaylandClient client;
   final int id;
 
-  WaylandObject(this.client, this.id);
+  WaylandObject(this.client, this.id) {
+    client._objects[id] = this;
+  }
 
   void processEvent(int code, Uint8List payload);
 }
@@ -640,16 +601,13 @@ class WaylandRegistry extends WaylandObject {
           case 'wl_compositor':
             client._compositor =
                 WaylandCompositor(client, bind(name, interface, version));
-            client._objects[client._compositor!.id] = client._compositor!;
             break;
           case 'wl_shm':
             client._shm = WaylandShm(client, bind(name, interface, version));
-            client._objects[client._shm!.id] = client._shm!;
             break;
           case 'xdg_wm_base':
             client._xdgWmBase =
                 XdgWmBase(client, bind(name, interface, version));
-            client._objects[client._xdgWmBase!.id] = client._xdgWmBase!;
             break;
         }
         break;
@@ -668,12 +626,12 @@ class WaylandRegistry extends WaylandObject {
 class WaylandCompositor extends WaylandObject {
   WaylandCompositor(WaylandClient client, int id) : super(client, id);
 
-  int createSurface() {
+  WaylandSurface createSurface() {
     var id = client._getNextId();
     var payload = _WaylandWriteBuffer();
     payload.writeUint(id);
     client._sendRequest(id, 0, payload.data);
-    return id;
+    return WaylandSurface(client, id);
   }
 
   int createRegion() {
@@ -712,9 +670,7 @@ class WaylandShmPool extends WaylandObject {
     payload.writeInt(stride);
     payload.writeUint(_encodeShmFormat(format));
     client._sendRequest(id, 0, payload.data);
-    var result = WaylandBuffer(client, id);
-    client._objects[id] = result;
-    return result;
+    return WaylandBuffer(client, id);
   }
 
   void destroy() {
@@ -750,9 +706,7 @@ class WaylandShm extends WaylandObject {
     payload.writeFd(fd);
     payload.writeUint(size);
     client._sendRequest(id, 0, payload.data);
-    var result = WaylandShmPool(client, id);
-    client._objects[id] = result;
-    return result;
+    return WaylandShmPool(client, id);
   }
 
   @override
@@ -794,6 +748,87 @@ class WaylandBuffer extends WaylandObject {
   }
 }
 
+class WaylandSurface extends WaylandObject {
+  WaylandSurface(WaylandClient client, int id) : super(client, id);
+
+  void destroy() {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 0, payload.data);
+  }
+
+  void attach(WaylandBuffer buffer, int x, int y) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeUint(buffer.id);
+    payload.writeInt(x);
+    payload.writeInt(y);
+    client._sendRequest(id, 1, payload.data);
+  }
+
+  void damage(int x, int y, int width, int height) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeInt(x);
+    payload.writeInt(y);
+    payload.writeInt(width);
+    payload.writeInt(height);
+    client._sendRequest(id, 2, payload.data);
+  }
+
+  // ...
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      case 0:
+        // FIXME: output
+        print('wl_buffer::enter');
+        break;
+      case 1:
+        // FIXME: output
+        print('wl_buffer::leave');
+        break;
+      default:
+        print('wl_surfacer::$code $payload');
+        break;
+    }
+  }
+}
+
+class WaylandRegion extends WaylandObject {
+  WaylandRegion(WaylandClient client, int id) : super(client, id);
+
+  void destroy() {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 0, payload.data);
+  }
+
+  void add(int x, int y, int width, int height) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeInt(x);
+    payload.writeInt(y);
+    payload.writeInt(width);
+    payload.writeInt(height);
+    client._sendRequest(id, 1, payload.data);
+  }
+
+  void subtract(int x, int y, int width, int height) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeInt(x);
+    payload.writeInt(y);
+    payload.writeInt(width);
+    payload.writeInt(height);
+    client._sendRequest(id, 2, payload.data);
+  }
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      default:
+        print('wl_region::$code $payload');
+        break;
+    }
+  }
+}
+
 class XdgWmBase extends WaylandObject {
   XdgWmBase(WaylandClient client, int id) : super(client, id);
 
@@ -802,21 +837,21 @@ class XdgWmBase extends WaylandObject {
     client._sendRequest(id, 0, payload.data);
   }
 
-  int createPositioner() {
+  XdgPositioner createPositioner() {
     var id = client._getNextId();
     var payload = _WaylandWriteBuffer();
     payload.writeUint(id);
     client._sendRequest(id, 1, payload.data);
-    return id;
+    return XdgPositioner(client, id);
   }
 
-  int getXdgSurface(int surface) {
+  XdgSurface getXdgSurface(WaylandSurface surface) {
     var id = client._getNextId();
     var payload = _WaylandWriteBuffer();
     payload.writeUint(id);
-    payload.writeUint(surface);
+    payload.writeUint(surface.id);
     client._sendRequest(id, 2, payload.data);
-    return id;
+    return XdgSurface(client, id);
   }
 
   void pong(int serial) {
@@ -836,6 +871,144 @@ class XdgWmBase extends WaylandObject {
         break;
       default:
         print('xdg_wm_base::$code $payload');
+        break;
+    }
+  }
+}
+
+class XdgPositioner extends WaylandObject {
+  XdgPositioner(WaylandClient client, int id) : super(client, id);
+
+  void destroy() {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 0, payload.data);
+  }
+
+  void setSize(int width, int height) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeInt(width);
+    payload.writeInt(height);
+    client._sendRequest(id, 1, payload.data);
+  }
+
+  //setAnchorRect
+
+  //setAnchor
+
+  //setGravity
+
+  //setConstraintAdjustment
+
+  //setOffset
+
+  //setReactive
+
+  //setParentSize
+
+  //setParentConfigure
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      default:
+        print('xdg_positioner::$code $payload');
+        break;
+    }
+  }
+}
+
+class XdgSurface extends WaylandObject {
+  XdgSurface(WaylandClient client, int id) : super(client, id);
+
+  void destroy() {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 0, payload.data);
+  }
+
+  XdgToplevel getToplevel() {
+    var id = client._getNextId();
+    var payload = _WaylandWriteBuffer();
+    payload.writeUint(id);
+    client._sendRequest(id, 1, payload.data);
+    return XdgToplevel(client, id);
+  }
+
+  int getPopup(int parent, int positioner) {
+    var id = client._getNextId();
+    var payload = _WaylandWriteBuffer();
+    payload.writeUint(id);
+    payload.writeUint(parent);
+    payload.writeUint(positioner);
+    client._sendRequest(id, 2, payload.data);
+    return id;
+  }
+
+  void setWindowGeometry(int x, int y, int width, int height) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeInt(x);
+    payload.writeInt(y);
+    payload.writeInt(width);
+    payload.writeInt(height);
+    client._sendRequest(id, 3, payload.data);
+  }
+
+  void ackConfigure(int serial) {
+    var payload = _WaylandWriteBuffer();
+    payload.writeUint(serial);
+    client._sendRequest(id, 4, payload.data);
+  }
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      default:
+        print('xdg_surface::$code $payload');
+        break;
+    }
+  }
+}
+
+class XdgToplevel extends WaylandObject {
+  XdgToplevel(WaylandClient client, int id) : super(client, id);
+
+  void destroy() {
+    var payload = _WaylandWriteBuffer();
+    client._sendRequest(id, 0, payload.data);
+  }
+
+  //setParent
+
+  //setTitle
+
+  //setAppId
+
+  //showWindowMenu
+
+  //move
+
+  //resize
+
+  //state
+
+  //setMaxSize
+
+  //setMinSize
+
+  //setMaximized
+
+  //unsetMaximized
+
+  //setFullscreen
+
+  //unsetFullscreen
+
+  //setMiminized
+
+  @override
+  void processEvent(int code, Uint8List payload) {
+    switch (code) {
+      default:
+        print('xdg_toplevel::$code $payload');
         break;
     }
   }
