@@ -6,5 +6,5 @@ void main() async {
 
   // FIXME
 
-  await client.close();
+  //await client.close();
 }
