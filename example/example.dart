@@ -5,7 +5,9 @@ void main() async {
   await client.connect();
 
   var surface = client.compositor!.createSurface();
-  var xdgSurface = client.xdgWmBase!.getXdgSurface(surface);
+  XdgSurface? xdgSurface;
+  xdgSurface = client.xdgWmBase!.getXdgSurface(surface,
+      onConfigure: (serial) => xdgSurface!.ackConfigure(serial));
   var toplevel = xdgSurface.getToplevel();
   toplevel.setTitle('Hello World');
   toplevel.setMinSize(400, 400);
