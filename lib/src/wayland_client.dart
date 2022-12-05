@@ -347,13 +347,7 @@ class WaylandClient {
   final _buffer = <int>[];
 
   late final WaylandDisplay _display;
-  late final WaylandRegistry _registry;
-  WaylandCompositor? compositor;
-  WaylandShm? shm;
-  WaylandOutput? output;
-  WaylandDataDeviceManager? dataDeviceManager;
-  WaylandSeat? seat;
-  XdgWmBase? xdgWmBase;
+
   final _objects = <int, WaylandObject>{};
 
   // ID 1 is used for the display object.
@@ -382,11 +376,21 @@ class WaylandClient {
     await _connectToSocket(path);
 
     _display = WaylandDisplay(this);
-    _registry = _display.getRegistry(onGlobal: _onGlobal);
-    var completer = Completer();
-    _display.sync((_) => completer.complete());
+  }
 
-    await completer.future;
+  WaylandCallback sync(Function(int) onDone) {
+    return _display.sync(onDone);
+  }
+
+  WaylandRegistry getRegistry(
+      {Function(int, String, int)? onGlobal, Function(int)? onGlobalRemove}) {
+    return _display.getRegistry(
+        onGlobal: onGlobal, onGlobalRemove: onGlobalRemove);
+  }
+
+  /// Closes the connection to the server.
+  Future<void> close() async {
+    await _socket?.close();
   }
 
   /// Connects to the Wayland server on a socket on [path].
@@ -394,11 +398,6 @@ class WaylandClient {
     var socketAddress = InternetAddress(path, type: InternetAddressType.unix);
     _socket = await Socket.connect(socketAddress, 0);
     _socket?.listen(_processData);
-  }
-
-  /// Closes the connection to the server.
-  Future<void> close() async {
-    await _socket?.close();
   }
 
   void _processData(Uint8List data) {
@@ -453,31 +452,6 @@ class WaylandClient {
     _socket?.add(header.data);
     if (payload != null) {
       _socket?.add(payload);
-    }
-  }
-
-  void _onGlobal(int name, String interface, int version) {
-    switch (interface) {
-      case 'wl_compositor':
-        compositor =
-            WaylandCompositor(this, _registry.bind(name, interface, version));
-        break;
-      case 'wl_shm':
-        shm = WaylandShm(this, _registry.bind(name, interface, version));
-        break;
-      case 'wl_output':
-        output = WaylandOutput(this, _registry.bind(name, interface, version));
-        break;
-      case 'wl_data_device_manager':
-        dataDeviceManager = WaylandDataDeviceManager(
-            this, _registry.bind(name, interface, version));
-        break;
-      case 'wl_seat':
-        seat = WaylandSeat(this, _registry.bind(name, interface, version));
-        break;
-      case 'xdg_wm_base':
-        xdgWmBase = XdgWmBase(this, _registry.bind(name, interface, version));
-        break;
     }
   }
 }
@@ -1473,7 +1447,9 @@ class XdgWmBase extends WaylandObject {
   @override
   String get interfaceName => 'xdg_wm_base';
 
-  XdgWmBase(WaylandClient client, int id) : super(client, id);
+  final Function(int)? onPing;
+
+  XdgWmBase(WaylandClient client, int id, {this.onPing}) : super(client, id);
 
   void destroy() {
     client._sendRequest(id, 0);
@@ -1509,8 +1485,7 @@ class XdgWmBase extends WaylandObject {
       case 0:
         var buffer = _WaylandReadBuffer(payload);
         var serial = buffer.readUint();
-        // FIXME: Add a callback in case the caller wants to know about these.
-        pong(serial);
+        onPing?.call(serial);
         return true;
       default:
         return false;
