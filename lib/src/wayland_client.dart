@@ -1315,8 +1315,8 @@ class WaylandKeyboard extends WaylandObject {
         return true;
       case 5:
         var buffer = WaylandReadBuffer(payload);
-        this.rate = buffer.readInt();
-        this.delay = buffer.readInt();
+        rate = buffer.readInt();
+        delay = buffer.readInt();
         return true;
       default:
         return false;
