@@ -436,7 +436,7 @@ class WaylandClient {
     }
   }
 
-  int _getNextId() {
+  int getNextId() {
     var id = _nextId;
     _nextId++;
     return id;
@@ -616,7 +616,7 @@ class WaylandDisplay extends WaylandObject {
   WaylandDisplay(WaylandClient client) : super(client, 1);
 
   WaylandCallback sync(Function(int) onDone) {
-    var callback = client._getNextId();
+    var callback = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(callback);
     client.sendRequest(id, 0, payload.data);
@@ -625,7 +625,7 @@ class WaylandDisplay extends WaylandObject {
 
   WaylandRegistry getRegistry(
       {Function(int, String, int)? onGlobal, Function(int)? onGlobalRemove}) {
-    var registry = client._getNextId();
+    var registry = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(registry);
     client.sendRequest(id, 1, payload.data);
@@ -667,7 +667,7 @@ class WaylandRegistry extends WaylandObject {
       : super(client, id);
 
   int bind(int name, String interface, int version) {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(name);
     payload.writeString(interface);
@@ -729,7 +729,7 @@ class WaylandCompositor extends WaylandObject {
 
   WaylandSurface createSurface(
       {Function(WaylandOutput)? onEnter, Function(WaylandOutput)? onLeave}) {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     client.sendRequest(this.id, 0, payload.data);
@@ -737,7 +737,7 @@ class WaylandCompositor extends WaylandObject {
   }
 
   WaylandRegion createRegion() {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     client.sendRequest(this.id, 1, payload.data);
@@ -758,7 +758,7 @@ class WaylandShmPool extends WaylandObject {
       required int stride,
       required WaylandShmFormat format,
       Function()? onRelease}) {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     payload.writeInt(offset);
@@ -793,7 +793,7 @@ class WaylandShm extends WaylandObject {
     var shmFile = await File('/dev/shm').open();
     var fd = ResourceHandle.fromFile(shmFile);
 
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     payload.writeFd(fd);
@@ -990,7 +990,7 @@ class WaylandDataDeviceManager extends WaylandObject {
       Function()? onDndDropPerformed,
       Function()? onDndDropFinished,
       Function(int)? onAction}) {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     client.sendRequest(this.id, 0, payload.data);
@@ -1004,7 +1004,7 @@ class WaylandDataDeviceManager extends WaylandObject {
   }
 
   WaylandDataDevice getDataDevice(WaylandSeat seat) {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     payload.writeObject(seat);
@@ -1045,7 +1045,7 @@ class WaylandSurface extends WaylandObject {
   }
 
   WaylandCallback frame(Function(int) onDone) {
-    var callback = client._getNextId();
+    var callback = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(callback);
     client.sendRequest(id, 3, payload.data);
@@ -1132,7 +1132,7 @@ class WaylandSeat extends WaylandObject {
       Function(int serial, WaylandSurface surface)? onLeave,
       Function(int time, double x, double y)? onMotion,
       Function(int serial, int time, int button, int state)? onButton}) {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     client.sendRequest(this.id, 0, payload.data);
@@ -1147,7 +1147,7 @@ class WaylandSeat extends WaylandObject {
       {Function(int serial, WaylandSurface surface, Uint8List keys)? onEnter,
       Function(int serial, WaylandSurface surface)? onLeave,
       Function(int serial, int time, int key, int state)? onKey}) {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     client.sendRequest(this.id, 1, payload.data);
@@ -1156,7 +1156,7 @@ class WaylandSeat extends WaylandObject {
   }
 
   WaylandTouch getTouch() {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     client.sendRequest(this.id, 2, payload.data);
@@ -1455,7 +1455,7 @@ class XdgWmBase extends WaylandObject {
   }
 
   XdgPositioner createPositioner() {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     client.sendRequest(this.id, 1, payload.data);
@@ -1464,7 +1464,7 @@ class XdgWmBase extends WaylandObject {
 
   XdgSurface getXdgSurface(WaylandSurface surface,
       {Function(int serial)? onConfigure}) {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     payload.writeObject(surface);
@@ -1629,7 +1629,7 @@ class XdgSurface extends WaylandObject {
       {Function(int, int, List<int>)? onConfigure,
       Function()? onClose,
       Function(int, int)? onConfigureBounds}) {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     client.sendRequest(this.id, 1, payload.data);
@@ -1643,7 +1643,7 @@ class XdgSurface extends WaylandObject {
       {Function(int, int, int, int)? onConfigure,
       Function()? onPopupDone,
       Function(int)? onRepositioned}) {
-    var id = client._getNextId();
+    var id = client.getNextId();
     var payload = WaylandWriteBuffer();
     payload.writeUint(id);
     payload.writeUint(parent);
